@@ -153,7 +153,11 @@ public class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void removeProxyHandlers(ChannelHandlerContext ctx) {
-        ctx.pipeline().remove("haproxy-handler");
-        ctx.pipeline().remove("haproxy-decoder");
+        if (ctx.pipeline().get(ProxyProtocolPipelineSupport.HANDLER_NAME) != null) {
+            ctx.pipeline().remove(ProxyProtocolPipelineSupport.HANDLER_NAME);
+        }
+        if (ctx.pipeline().get(ProxyProtocolPipelineSupport.DECODER_NAME) != null) {
+            ctx.pipeline().remove(ProxyProtocolPipelineSupport.DECODER_NAME);
+        }
     }
 }

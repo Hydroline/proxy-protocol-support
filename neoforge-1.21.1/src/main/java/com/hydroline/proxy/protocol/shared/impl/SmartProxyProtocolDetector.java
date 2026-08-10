@@ -6,14 +6,19 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
 import com.hydroline.proxy.protocol.shared.ProxyProtocolSupport;
 
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * Smart detector that checks the first few bytes to determine if this is a Proxy Protocol connection
  * without blocking direct connections.
  */
 public class SmartProxyProtocolDetector extends ChannelInboundHandlerAdapter {
 
+    private static final String LEGACY_DECODER_NAME = "haproxy-decoder";
     private static final byte[] PROXY_V1_PREFIX = "PROXY ".getBytes();
     private static final byte[] PROXY_V2_PREFIX = {0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A};
+    private static final AtomicBoolean EXISTING_DECODER_WARNING_LOGGED = new AtomicBoolean();
 
     private boolean detected = false;
 
@@ -70,9 +75,15 @@ public class SmartProxyProtocolDetector extends ChannelInboundHandlerAdapter {
 
         if (isProxyV1 || isProxyV2) {
             ProxyProtocolSupport.logDebug("Detected Proxy Protocol " + (isProxyV1 ? "v1" : "v2") + " after " + String.format("%.2f", detectionMs) + "ms.");
+            Map.Entry<String, io.netty.channel.ChannelHandler> existingDecoder = findExistingDecoder(ctx);
+            if (existingDecoder != null) {
+                deferToExistingDecoder(ctx, msg, existingDecoder);
+                return;
+            }
+
             ctx.pipeline()
-                    .addAfter("smart-detector", "haproxy-decoder", new HAProxyMessageDecoder())
-                    .addAfter("haproxy-decoder", "haproxy-handler", new ProxyProtocolHandler())
+                    .addAfter(ProxyProtocolPipelineSupport.DETECTOR_NAME, ProxyProtocolPipelineSupport.DECODER_NAME, new HAProxyMessageDecoder())
+                    .addAfter(ProxyProtocolPipelineSupport.DECODER_NAME, ProxyProtocolPipelineSupport.HANDLER_NAME, new ProxyProtocolHandler())
                     .remove(this);
             ProxyProtocolSupport.logDebug("Inserted HAProxy handlers for " + ctx.channel().remoteAddress());
             super.channelRead(ctx, msg);
@@ -87,6 +98,37 @@ public class SmartProxyProtocolDetector extends ChannelInboundHandlerAdapter {
                 ctx.disconnect();
             }
         }
+    }
+
+    private Map.Entry<String, io.netty.channel.ChannelHandler> findExistingDecoder(ChannelHandlerContext ctx) {
+        for (Map.Entry<String, io.netty.channel.ChannelHandler> entry : ctx.pipeline().toMap().entrySet()) {
+            if (ProxyProtocolPipelineSupport.DECODER_NAME.equals(entry.getKey())) {
+                continue;
+            }
+
+            String className = entry.getValue().getClass().getName();
+            if (LEGACY_DECODER_NAME.equals(entry.getKey()) || className.endsWith(".HAProxyMessageDecoder")) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    private void deferToExistingDecoder(
+            ChannelHandlerContext ctx,
+            Object msg,
+            Map.Entry<String, io.netty.channel.ChannelHandler> existingDecoder) throws Exception {
+        String owner = existingDecoder.getKey() + " (" + existingDecoder.getValue().getClass().getName() + ")";
+        if (EXISTING_DECODER_WARNING_LOGGED.compareAndSet(false, true)) {
+            ProxyProtocolSupport.warnLogger.accept("Existing HAProxy decoder detected: " + owner
+                    + ". Deferring Proxy Protocol handling to the existing pipeline owner. Pipeline: "
+                    + ctx.pipeline().names());
+        } else {
+            ProxyProtocolSupport.logDebug("Deferring Proxy Protocol handling to existing decoder " + owner + ".");
+        }
+
+        ctx.pipeline().remove(this);
+        super.channelRead(ctx, msg);
     }
 
     @Override

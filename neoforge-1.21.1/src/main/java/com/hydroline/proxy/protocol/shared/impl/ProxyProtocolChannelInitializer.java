@@ -2,7 +2,6 @@ package com.hydroline.proxy.protocol.shared.impl;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
-import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
 import com.hydroline.proxy.protocol.shared.ProxyProtocolSupport;
 
 /**
